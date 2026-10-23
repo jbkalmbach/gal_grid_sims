@@ -1,0 +1,41 @@
+includeConfigs:
+  - ${DRP_PIPE_DIR}/bps/resources/LSSTCam/DRP.yaml
+
+LSST_VERSION: ${WEEKLY}
+
+pipelineYaml: "/pscratch/sd/b/brycek/gal_grid_sims/pipelines/coadd_pipeline.yaml#lsstcamsim-pipeline"
+
+payload:
+  payloadName: coadd_pipeline_test_dp2_gal_only_grid_mag_22
+  butlerConfig: dp2_sims_dev
+  inCollection: u/brycek/test_grid_mag_22_gal_only,refcats/dp2_gal_only_grid_mag_22
+  dataQuery: "instrument='LSSTCam' and exposure.observation_type='science'"
+
+numberOfRetries: 3
+requestMemory: 4000
+memoryMultiplier: 2
+extraQgraphOptions: "--dataset-query-constraint raw"
+extraRunQuantumOptions: "--no-raise-on-partial-outputs"
+
+wmsServiceClass: lsst.ctrl.bps.parsl.ParslService
+computeSite: slurm
+
+parsl:
+  log_level: WARN
+
+site:
+  local:
+    class: lsst.ctrl.bps.parsl.sites.Local
+    cores: 8
+    monitorEnable: true
+    monitorFilename: runinfo/monitoring.db
+  work_queue:
+    class: bps_parsl_sites.SlurmTaskVine
+    nodes_per_block: 5
+    walltime: "2:00:00"
+    exclusive: true
+    scheduler_options: |
+      #SBATCH --partition=milano
+    worker_options: "--memory=440000"  # total memory in MB
+    monitorEnable: true
+    monitorFilename: runinfo/monitoring.db

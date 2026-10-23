@@ -18,9 +18,9 @@ bands = "ugrizy"
 
 # Name under which the converted refcat is registered in the butler.  Bump the
 # suffix if you regenerate so old/new versions don't collide.
-config.dataset_config.ref_dataset_name = "grid_galaxies_20251023"
+config.dataset_config.ref_dataset_name = "dp2_gal_only_grid_mag_22"
 
-config.n_processes = 32
+config.n_processes = 4
 
 # --- identity / astrometry columns -----------------------------------------
 config.id_name = "object_id"
