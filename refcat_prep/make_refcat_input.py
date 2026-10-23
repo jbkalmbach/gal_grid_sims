@@ -27,7 +27,11 @@ Usage
     python make_refcat_input.py \
         --skycatalog /path/to/<catalog_name>/skyCatalog.yaml \
         --name dp2_sv320 \
+        [--tracts-file ../footprints/<list>.txt] \
         [--bands ugrizy] [--processes 32] [--outdir .]
+
+Pass ``--tracts-file`` (one of the ``../footprints/*.txt`` lists) to restrict
+the refcat to those tracts -- useful for a smaller end-to-end test.
 
 Produces, in ``--outdir``:
   * ``initial_refcat_mags_<name>.parquet`` -- cached per-object id/ra/dec/mags.
@@ -35,7 +39,6 @@ Produces, in ``--outdir``:
     ``convertReferenceCatalog`` (see the README for the next steps).
 """
 import os
-import glob
 import argparse
 import warnings
 from collections import defaultdict
@@ -57,6 +60,10 @@ MAG_ERR = 0.001        # per-band magnitude error
 
 
 lsst_bps = load_lsst_bandpasses()
+
+# Must match dp2_footprint_skycatalog.py: galaxy_id = tract * ID_STRIDE + index.
+# Used to recover an object's tract for --tracts-file filtering.
+ID_STRIDE = 100_000_000
 
 
 def _mag0_fluxes(bands):
@@ -117,23 +124,56 @@ def _init_worker(obj_list):
 # --------------------------------------------------------------------------
 # Catalog loading -- iterate every healpix pixel of the whole catalog
 # --------------------------------------------------------------------------
-def read_whole_skycatalog(skycatalog_yaml):
-    """Return an ObjectList with every galaxy in the catalog.
+def read_tract_list(path):
+    """Read tract ids from a tract-list file (first column, '#' comments).
+
+    Same format as the footprints/*.txt files consumed by
+    dp2_footprint_skycatalog.py: one tract id per line (extra columns such as
+    ra/dec centers ignored), '#' comments allowed.
+    """
+    tracts = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            tracts.append(int(line.split()[0]))
+    return set(tracts)
+
+
+def read_whole_skycatalog(skycatalog_yaml, tracts=None):
+    """Return a list of every galaxy object in the catalog.
 
     Rather than cone-searching hardcoded field centers, walk the healpix
     pixels that actually have galaxy data files and read each in full (no
     region filter -> no double counting across overlapping regions).
+
+    If `tracts` is given (a set of tract ids), keep only galaxies belonging to
+    those tracts.  The catalog is sharded by healpix, not tract, but
+    dp2_footprint_skycatalog.py encodes the tract in every id as
+    ``galaxy_id = tract * ID_STRIDE + index``, so we recover it by integer
+    division -- no butler/skymap lookup needed.
     """
     skycatalog_root = os.path.dirname(os.path.abspath(skycatalog_yaml))
     sky_cat = skyCatalogs.open_catalog(skycatalog_yaml,
                                        skycatalog_root=skycatalog_root)
 
-    obj_list = ObjectList()
+    tracts = list(tracts) if tracts is not None else None
+    objects = []
     for hp in sorted(sky_cat.hps_by_type("galaxy")):
         coll = sky_cat.get_object_type_by_hp(hp, "galaxy")
-        if len(coll) > 0:
-            obj_list.append_object_list(coll)
-    return obj_list
+        if len(coll) == 0:
+            continue
+        if tracts is None:
+            objects.extend(list(coll))
+        else:
+            # Keep only objects whose tract is in the requested set.  Indexing
+            # a collection with an iterable returns a plain list of objects.
+            gid = np.asarray(coll.get_native_attribute("galaxy_id"))
+            keep = np.where(np.isin(gid // ID_STRIDE, tracts))[0]
+            if len(keep):
+                objects.extend(coll[(keep,)])
+    return objects
 
 
 # --------------------------------------------------------------------------
@@ -147,6 +187,10 @@ def main():
                     help="path to the generated <catalog>/skyCatalog.yaml")
     ap.add_argument("--name", required=True,
                     help="label for output files, e.g. dp2_sv320")
+    ap.add_argument("--tracts-file",
+                    help="optional footprints/*.txt tract list; restrict the "
+                         "refcat to galaxies in these tracts (for a smaller "
+                         "test). Omit to use the whole catalog.")
     ap.add_argument("--bands", default="ugrizy",
                     help="LSST bands to write (default: ugrizy)")
     ap.add_argument("--processes", type=int, default=32,
@@ -158,11 +202,16 @@ def main():
     bands = list(args.bands)
     os.makedirs(args.outdir, exist_ok=True)
 
+    tracts = None
+    if args.tracts_file:
+        tracts = read_tract_list(args.tracts_file)
+        print(f"# restricting to {len(tracts)} tracts from {args.tracts_file}")
+
     initial_refcat_data = os.path.join(
         args.outdir, f"initial_refcat_mags_{args.name}.parquet")
 
     if not os.path.isfile(initial_refcat_data):
-        objects = read_whole_skycatalog(args.skycatalog)
+        objects = read_whole_skycatalog(args.skycatalog, tracts=tracts)
         nobj = len(objects)
         print("# skyCatalog galaxies:", nobj)
         if nobj == 0:

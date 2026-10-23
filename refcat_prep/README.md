@@ -40,6 +40,23 @@ skyCatalogs object API, and writes:
   force a recompute).
 - `grid_galaxies_dp2_sv320_refmags.csv` — the CSV consumed in step 2.
 
+### Smaller test: restrict to a tract list
+Pass `--tracts-file` with one of the `../footprints/*.txt` tract lists (same
+files `dp2_footprint_skycatalog.py` takes) to build a refcat from only those
+tracts — handy for a quick end-to-end test before running the whole footprint:
+```bash
+# e.g. a hand-trimmed subset of footprints/dp2_tracts_Rubin_SV_320_-15.txt
+python make_refcat_input.py \
+    --skycatalog $SCRATCH/grid_catalogs/dp2_sv320/skyCatalog.yaml \
+    --name dp2_sv320_test \
+    --tracts-file ../footprints/dp2_tracts_subset.txt \
+    --bands gri --processes 8 --outdir .
+```
+The catalog is sharded by healpix, not tract, so this filters on the tract
+encoded in each `galaxy_id` (`galaxy_id = tract * 100_000_000 + index`, matching
+`dp2_footprint_skycatalog.py`) — no butler/skymap lookup needed.  Use a distinct
+`--name` so the test outputs don't overwrite the full-catalog ones.
+
 ## 2. Convert to the standard refcat format
 ```bash
 convertReferenceCatalog \
