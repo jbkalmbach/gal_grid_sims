@@ -9,6 +9,8 @@ These files run imSim on a skyCatalog produced by `run_grid_skycatalog.py` or
   write) and the catalog path pointing at a generated `skyCatalog.yaml`.
 - `opsim_visits.py` — browse the opsim `observations` table to pick a visit
   (`observationId`) by field / band / RA-Dec / night.
+- `fix_seqnum.py` — post-process raw outputs to correct the `SEQNUM`/`OBSID`
+  headers (see step 4).
 
 ## 1. Pick a visit from the DP2 opsim db
 ```bash
@@ -37,6 +39,31 @@ galsim imsim-grid-run.yaml \
 ```
 Output goes to `output/<visit>/` (eimage + amp files + truth catalog), per the
 `output.dir` template in the YAML.
+
+## 4. Fix the SEQNUM/OBSID headers before ingest
+imSim recomputes the daily sequence number by counting exposures earlier in the
+`day_obs` (`imsim/opsim_data.py`) instead of using the opsim db's own `seq_num`
+column.  For the DP2 `*_fixed` dbs the stored `seq_num` already decomposes the
+`observationId` exactly (`observationId = day_obs * 1e5 + seq_num`), so the
+recounted value is wrong and the ingested raws get the wrong `exposure` id
+(e.g. visit `2025060400350` ingests as `seq_num` 105 instead of 350).
+
+`fix_seqnum.py` repairs already-generated raws in place, deriving the correct
+value from the headers (`RUNNUM - DAYOBS * 100000`) and rewriting both `SEQNUM`
+and `OBSID`:
+```bash
+# dry run first — report changes without writing
+python fix_seqnum.py --dry-run \
+    $SCRATCH/grid_galaxies/imsim_output/run_dp2_footprint_grid_mag_22/
+
+# then fix in place
+python fix_seqnum.py \
+    $SCRATCH/grid_galaxies/imsim_output/run_dp2_footprint_grid_mag_22/
+```
+It accepts files, globs, or directories (walked recursively).  Run it **before**
+ingesting the raws — the butler bakes the `exposure` id in at ingest time, so
+raws already ingested with the wrong `seq_num` must be re-ingested after fixing.
+Assumes single-snap visits (true for DP2).
 
 ## Notes
 - The visit's band must be one for which the catalog has `lsst_flux_<band>`
