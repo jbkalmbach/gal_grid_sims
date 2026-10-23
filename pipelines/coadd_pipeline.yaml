@@ -1,0 +1,56 @@
+description: |
+  Pipeline to generate coadds without recalibration steps.
+
+imports:
+  - location: ${LSSTCAM_COADD_GEN_DIR}/pipelines/_ingredients/LSSTCamSim/DRP.yaml
+
+tasks:
+  calibrateImage:
+    class: lsst.pipe.tasks.calibrateImage.CalibrateImageTask
+    config:
+      connections.astrometry_ref_cat: "dp2_gal_only_grid_mag_22"
+      connections.photometry_ref_cat: "dp2_gal_only_grid_mag_22"
+      python: |
+        config.photometry.applyColorTerms = False
+        config.photometry.match.referenceSelection.magLimit.fluxField = "lsst_i_flux"
+        config.astrometry_ref_loader.filterMap = {band: 'lsst_%s' % (band) for band in 'ugrizy'}
+        config.astrometry_ref_loader.anyFilterMapsToThis = None
+        config.photometry_ref_loader.filterMap = {band: 'lsst_%s' % (band) for band in 'ugrizy'}
+  consolidateVisitSummary:
+    class: lsst.pipe.tasks.postprocess.ConsolidateVisitSummaryTask
+    config:
+      full: true
+      connections.visitSummary: visit_summary
+      connections.visitSummarySchema: visit_summary_schema
+  makeDirectWarp:
+    class: lsst.drp.tasks.make_direct_warp.MakeDirectWarpTask
+  selectDeepCoaddVisits:
+    class: lsst.pipe.tasks.selectImages.BestSeeingSelectVisitsTask
+  assembleCellCoadd:
+    class: lsst.drp.tasks.assemble_cell_coadd.AssembleCellCoaddTask
+  measureObjectUnforced:
+    class: lsst.pipe.tasks.multiBand.MeasureMergedCoaddSourcesTask
+    config:
+      doPropagateFlags: false
+subsets:
+  lsstcamsim-pipeline:
+    subset:
+      - isr
+      - calibrateImage
+      - consolidateVisitSummary
+      - makeDirectWarp
+      - makePsfMatchedWarp
+      - selectDeepCoaddVisits
+      - assembleDeepCoadd
+      - assembleCellCoadd
+      - detectCoaddPeaks
+      - mergeObjectDetection
+      - deconvolve
+      - deblendCoaddFootprints
+      - measureObjectUnforced
+      - mergeObjectMeasurement
+      - measureObjectForced
+      - metadetectionShear
+      - consolidateShearObject
+    description: |
+      Subset of DRP tasks to produce coadds and do initial object measurements.
