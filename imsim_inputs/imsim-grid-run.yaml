@@ -1,0 +1,66 @@
+# imSim run config for a skyCatalog produced by run_grid_skycatalog.py /
+# dp2_footprint_skycatalog.py.  Set up to run at NERSC (paths below are NERSC
+# paths).  Based on the DP2 dev base config, with two changes for our catalogs:
+#   * input.sky_catalog.obj_types -> [galaxy]  (what we write; the base used
+#     [diffsky_galaxy, star] for the NERSC diffsky catalog)
+#   * input.sky_catalog.file_name -> our generated skyCatalog.yaml
+#
+# Override file_name / opsim visit on the command line, e.g.:
+#   galsim imsim-grid-run.yaml \
+#       input.sky_catalog.file_name=<path>/skyCatalog.yaml \
+#       input.opsim_data.visit=2025062900661
+#
+# Use imSim custom modules
+modules:
+    - imsim
+
+template: imsim-config-skycat
+
+# Our catalogs contain 'galaxy' objects (single-exponential disks).
+input.sky_catalog.obj_types: [galaxy]
+input.sky_catalog.approx_nobjects: 45000
+#input.sky_catalog.full_focal_plane: True
+
+input.atm_psf.screen_size: 819.2
+input.atm_psf.save_file:
+  type: FormattedStr
+  format: /pscratch/sd/b/brycek/grid_galaxies/imsim_output/atm_psf_files/atm_psf_%08d-%1d-%s.pkl
+  items:
+      - { type: OpsimData, field: observationId }
+      - { type: OpsimData, field: snap }
+      - { type: OpsimData, field: band }
+
+## Turn off check pointing for this example.
+#input.checkpoint: ""
+
+# Point this at the skyCatalog.yaml produced by our generators (override on the
+# command line for a specific catalog).
+input.sky_catalog.file_name: /pscratch/sd/b/brycek/grid_galaxies/catalogs/dp2_footprint_grid_mag_22/skyCatalog.yaml
+input.opsim_data.file_name: /pscratch/sd/j/jchiang8/dp2_sims_dev/dp2_visits_fixed.db
+input.opsim_data.visit: 2025062900661
+
+#image.nobjects: 2
+image.random_seed: 42
+
+image.nbatch: 20
+image.nsubbatch: 100
+image.nbatch_fft: 1
+
+# Disable brighter-fatter by not recalculating pixel boundaries:
+image.sensor.nrecalc: 1e300
+
+#stamp.fft_sb_thresh: 1e30  # This will disable FFT rendering
+stamp.fft_sb_thresh: 2e5
+
+output.dir:
+  type: FormattedStr
+  format: /pscratch/sd/b/brycek/grid_galaxies/imsim_output/run_dp2_footprint_grid_mag_22/%08d
+  items:
+    - '@input.opsim_data.visit'
+
+output.det_num.first: 94
+output.nproc: 1
+output.nfiles: 1
+output.timeout: 1e6
+output.truth.dir: '@output.dir'
+
