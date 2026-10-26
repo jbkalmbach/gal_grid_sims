@@ -83,6 +83,12 @@ Assumes single-snap visits (true for DP2).
 - Stars render as point sources (`galsim.DeltaFunction`) with a flat SED; their
   total per-band flux comes from `lsst_flux_<band>` just like the galaxies, so
   the reference-catalog magnitudes round-trip exactly (see `../refcat_prep/`).
+- Stars require `SIMS_SED_LIBRARY_DIR` to be set in the run environment:
+  skyCatalogs' `StarObject` resolves its SED as
+  `$SIMS_SED_LIBRARY_DIR/flatSED/sed_flat.txt.gz`, and if the var is unset
+  `os.path.join(None, ...)` raises `TypeError`. `run_in_desc_stack.sh` sets it to
+  the NERSC `sims_sed_library`. Galaxies use an inline tophat SED and never
+  needed it, so galaxy-only runs worked without it.
 - The catalog's tracts should overlap the visit's pointing, or the CCD will be
   empty. Match the field you chose in step 1 to the tracts in step 2.
 - For a full focal plane: set `input.sky_catalog.full_focal_plane: True`,

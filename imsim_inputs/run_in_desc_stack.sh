@@ -17,6 +17,12 @@ export DESC_GCR_SITE='nersc'
 
 export RUBIN_SIM_DATA_DIR=/global/cfs/cdirs/lsst/groups/CO/rubin_sim
 
+# skyCatalogs StarObject resolves its SED as $SIMS_SED_LIBRARY_DIR/<sed_filepath>.
+# Our grid stars use the flat SED (flatSED/sed_flat.txt.gz); without this set,
+# os.getenv returns None and os.path.join raises TypeError.  Galaxies use an
+# inline tophat SED and never needed it, which is why galaxy-only runs worked.
+export SIMS_SED_LIBRARY_DIR=/global/cfs/cdirs/descssim/imSim/lsst/data/sims_sed_library
+
 if [ -n "$DESCPYTHONPATH" ]; then
     export PYTHONPATH="$DESCPYTHONPATH:$PYTHONPATH"
     echo "Including DESCPYTHONPATH: $DESCPYTHONPATH"
