@@ -55,6 +55,7 @@ from run_grid_skycatalog import (
     N_TOPHAT, BANDS, resolve_param, mag0_band_fluxes,
     _galaxy_arrow_table, write_skycatalog_config,
 )
+from stars import DEFAULT_STAR_DENSITY, DEFAULT_STAR_EXCLUSION_ARCSEC
 
 # Defaults for the DP2 repo and the coadd collection we read the footprint from.
 DP2_REPO = "dp2_prep"
@@ -269,10 +270,13 @@ def _save_manifest(cat_dir, manifest):
     os.replace(tmp, path)
 
 
-def _run_params(spacing_arcsec, nside, bands, seed):
+def _run_params(spacing_arcsec, nside, bands, seed, star_density, star_seed,
+                star_exclusion_arcsec):
     """Signature of run parameters; a resume must match these."""
     return {"spacing_arcsec": spacing_arcsec, "nside": nside,
-            "bands": list(bands), "seed": seed}
+            "bands": list(bands), "seed": seed,
+            "star_density": star_density, "star_seed": star_seed,
+            "star_exclusion_arcsec": star_exclusion_arcsec}
 
 
 # --------------------------------------------------------------------------
@@ -298,13 +302,45 @@ def _write_tract_shards(tract, ra, dec, chunk, f0, bands, nside, shard_dir):
     return [int(p) for p in pixels]
 
 
-def _merge_shards(cat_dir, shard_dir, delete=True, logger=print):
-    """Merge per-tract shards into one galaxy_<hp>.parquet per healpix pixel.
+def _write_star_shards(tract, ids, ra, dec, mag, f0, bands, nside, shard_dir):
+    """Write one tract's stars as per-healpix pointsource shard files.
+
+    Mirrors ``_write_tract_shards`` for the point-source population: a
+    ``<hp>/pointsource_tract<t>.parquet`` main file and its flux counterpart,
+    built from the SAME per-pixel index so skyCatalogs' positional main/flux
+    join stays aligned.  Returns the pixel set written (empty if no stars).
+    """
+    import healpy as hp
+    from stars import star_arrow_tables
+
+    if ids.size == 0:
+        return []
+    pix = hp.ang2pix(nside, ra, dec, lonlat=True, nest=False)
+    pixels = np.unique(pix)
+    for hpix in pixels:
+        idx = np.where(pix == hpix)[0]
+        main, flux = star_arrow_tables(ids[idx], ra[idx], dec[idx], mag[idx],
+                                       f0, bands)
+        pdir = os.path.join(shard_dir, str(int(hpix)))
+        os.makedirs(pdir, exist_ok=True)
+        pq.write_table(main, os.path.join(pdir, f"pointsource_tract{tract}.parquet"))
+        pq.write_table(flux, os.path.join(pdir, f"pointsource_flux_tract{tract}.parquet"))
+    return [int(p) for p in pixels]
+
+
+def _merge_shards(cat_dir, shard_dir, delete=True, logger=print,
+                  kinds=("galaxy", "galaxy_flux")):
+    """Merge per-tract shards into one <kind>_<hp>.parquet per healpix pixel.
 
     Merges pixel by pixel and, when `delete` is True, removes each shard right
     after it is read and the pixel's shard directory once merged.  This bounds
     the transient extra disk to a single pixel's data rather than a full second
     copy of the whole footprint.
+
+    `kinds` lists the shard prefixes to merge (galaxy + its flux, and, when
+    stars are present, pointsource + its flux).  For each kind the shards are
+    merged in the same sorted (tract) order so the star main/flux files stay
+    positionally aligned for skyCatalogs' join.
     """
     if not os.path.isdir(shard_dir):
         return
@@ -315,7 +351,7 @@ def _merge_shards(cat_dir, shard_dir, delete=True, logger=print):
                + (" (deleting as we go)" if delete else "") + "...")
     for hpix in pixels:
         pdir = os.path.join(shard_dir, str(hpix))
-        for kind in ("galaxy", "galaxy_flux"):
+        for kind in kinds:
             shards = sorted(glob.glob(os.path.join(pdir, f"{kind}_tract*.parquet")))
             if not shards:
                 continue
@@ -344,7 +380,9 @@ def write_footprint_skycatalog(tracts, spacing_arcsec, out_dir, *,
                                catalog_name="dp2_footprint", repo=DP2_REPO,
                                nside=32, bands=BANDS, mag=20.0, hlr=0.5,
                                ellipticity=0.0, pa_deg=0.0, g1=0.0, g2=0.0,
-                               redshift=0.1, seed=None, resume=False,
+                               redshift=0.1, seed=None, star_density=0.0,
+                               star_mag=22.0, star_exclusion_arcsec=0.0,
+                               star_seed=None, resume=False,
                                keep_shards=False, logger=print):
     """Hex-tile each tract and stream the objects to parquet, resumably.
 
@@ -355,6 +393,17 @@ def write_footprint_skycatalog(tracts, spacing_arcsec, out_dir, *,
     into one ``galaxy_<hp>.parquet`` / ``galaxy_flux_<hp>.parquet`` per pixel and
     the skyCatalog.yaml is written.  Returns (config_path, n_objects_total).
 
+    If `star_density` > 0 (stars per square arcminute), each tract also gets a
+    sparse, irregular (uniform-random) population of point sources written as
+    ``pointsource_<hp>.parquet`` / ``pointsource_flux_<hp>.parquet``, and a
+    ``star`` block is added to the config.  These stars are what let the LSST
+    single-frame calibration (PSF modeling + ``matchPessimisticB`` astrometry)
+    run on an otherwise degenerate galaxy lattice.  `star_mag` is a scalar or
+    scipy spec; `star_seed` (default: `seed`) drives a star RNG stream that is
+    independent of the galaxy draws.  If `star_exclusion_arcsec` > 0, candidate
+    stars within that angular radius of a grid galaxy in the tract are rejected
+    so stars stay isolated point sources (keep it well below half `spacing`).
+
     Memory stays bounded to a single tract.  Per-tract RNG seeding
     (``seed`` combined with the tract id) and ``galaxy_id = tract*ID_STRIDE + i``
     make the result independent of tract order, so a resumed run reproduces the
@@ -362,20 +411,30 @@ def write_footprint_skycatalog(tracts, spacing_arcsec, out_dir, *,
     """
     import time
     from lsst.daf.butler import Butler
+    from stars import (n_stars_for_area, draw_positions_in_region,
+                       STAR_ID_NAMESPACE, STAR_SEED_TAG)
+
+    with_stars = star_density and star_density > 0
+    if star_seed is None:
+        star_seed = seed
 
     cat_dir = os.path.join(out_dir, catalog_name)
     shard_dir = os.path.join(cat_dir, "_shards")
     os.makedirs(shard_dir, exist_ok=True)
 
-    params = _run_params(spacing_arcsec, nside, bands, seed)
+    params = _run_params(spacing_arcsec, nside, bands, seed,
+                         star_density if with_stars else 0.0,
+                         star_seed if with_stars else None,
+                         star_exclusion_arcsec if with_stars else 0.0)
     manifest = _load_manifest(cat_dir) if resume else \
-        {"done_tracts": [], "n_total": 0, "params": params}
+        {"done_tracts": [], "n_total": 0, "n_stars_total": 0, "params": params}
     if resume and manifest["params"] not in (None, params):
         raise ValueError(
             "resume parameters do not match the existing run:\n"
             f"  existing: {manifest['params']}\n  requested: {params}\n"
             "Use a fresh --name or matching parameters.")
     manifest["params"] = params
+    manifest.setdefault("n_stars_total", 0)
     done = set(manifest["done_tracts"])
     if resume and done and logger:
         logger(f"resuming: {len(done)} of {len(tracts)} tracts already done")
@@ -386,6 +445,7 @@ def write_footprint_skycatalog(tracts, spacing_arcsec, out_dir, *,
 
     todo = [t for t in tracts if t not in done]
     n_total = manifest["n_total"]
+    n_stars_total = manifest["n_stars_total"]
     t_start = time.time()
     for i, t in enumerate(todo, 1):
         ra, dec = hex_tile_tract(skymap[t], spacing_arcsec)
@@ -403,26 +463,59 @@ def write_footprint_skycatalog(tracts, spacing_arcsec, out_dir, *,
         else:
             npix = 0
 
+        # Draw this tract's sparse irregular stars from a separate RNG stream so
+        # the star realization does not depend on the galaxy param draw order.
+        n_stars = 0
+        if with_stars:
+            region = skymap[t].inner_sky_region
+            area_sq_deg = region.getArea() * (180.0 / np.pi) ** 2  # sr -> deg^2
+            n_want = n_stars_for_area(area_sq_deg, star_density)
+            if n_want > 0:
+                star_rng = np.random.default_rng(
+                    None if star_seed is None
+                    else (star_seed, t, STAR_SEED_TAG))
+                # Exclude stars landing on this tract's grid galaxies (ra, dec).
+                sra, sdec = draw_positions_in_region(
+                    region, n_want, star_rng, galaxy_ra=ra, galaxy_dec=dec,
+                    exclusion_arcsec=star_exclusion_arcsec)
+                if sra.size:
+                    smag = resolve_param(star_mag, sra.size, star_rng)
+                    sids = STAR_ID_NAMESPACE + t * ID_STRIDE + \
+                        np.arange(sra.size, dtype=np.int64)
+                    _write_star_shards(t, sids, sra, sdec, smag, f0, bands,
+                                       nside, shard_dir)
+                    n_stars = sra.size
+                    n_stars_total += n_stars
+
         # Record progress after each tract so a kill loses at most one tract.
         manifest["done_tracts"].append(t)
         manifest["n_total"] = n_total
+        manifest["n_stars_total"] = n_stars_total
         _save_manifest(cat_dir, manifest)
 
         if logger:
             elapsed = time.time() - t_start
             rate = i / elapsed if elapsed > 0 else 0.0
             eta = (len(todo) - i) / rate if rate > 0 else float("nan")
-            logger(f"[{i}/{len(todo)}] tract {t}: {ra.size} objects "
-                   f"-> {npix} pixels | total {n_total} | "
+            star_msg = f", {n_stars} stars" if with_stars else ""
+            logger(f"[{i}/{len(todo)}] tract {t}: {ra.size} objects{star_msg} "
+                   f"-> {npix} pixels | total {n_total} gal / "
+                   f"{n_stars_total} stars | "
                    f"{rate*60:.1f} tracts/min | ETA {eta/60:.1f} min")
 
     if logger:
-        logger(f"all {len(tracts)} tracts done ({n_total} objects); finalizing")
+        logger(f"all {len(tracts)} tracts done ({n_total} galaxies, "
+               f"{n_stars_total} stars); finalizing")
     # Merge pixel by pixel, deleting each shard as it is consumed (unless the
     # user wants to keep them), so the transient extra disk never exceeds one
     # pixel's worth rather than a full second copy of the footprint.
-    _merge_shards(cat_dir, shard_dir, delete=not keep_shards, logger=logger)
-    config_path = write_skycatalog_config(cat_dir, nside=nside)
+    kinds = ["galaxy", "galaxy_flux"]
+    if with_stars:
+        kinds += ["pointsource", "pointsource_flux"]
+    _merge_shards(cat_dir, shard_dir, delete=not keep_shards, logger=logger,
+                  kinds=kinds)
+    config_path = write_skycatalog_config(cat_dir, nside=nside,
+                                          with_stars=bool(with_stars))
 
     if not keep_shards:
         # _merge_shards already removed the per-pixel shards + dirs; clear the
@@ -434,7 +527,7 @@ def write_footprint_skycatalog(tracts, spacing_arcsec, out_dir, *,
             os.remove(mpath)
         if logger:
             logger("removed shard files and manifest (use --keep-shards to keep)")
-    return config_path, n_total
+    return config_path, n_total, n_stars_total
 
 
 # --------------------------------------------------------------------------
@@ -472,6 +565,22 @@ def main():
     p.add_argument("--g2", type=_param, default=0.0)
     p.add_argument("--redshift", type=_param, default=0.1)
     p.add_argument("--seed", type=int, default=None)
+    # Sparse irregular star population (for LSST calibration).  On by default at
+    # the module default density; pass --star-density 0 for galaxies only.
+    p.add_argument("--star-density", type=float, default=None,
+                   help="point-source surface density [stars/arcmin^2]; adds a "
+                        "sparse irregular star population for calibration "
+                        f"(default: {DEFAULT_STAR_DENSITY}; 0 = galaxies only)")
+    p.add_argument("--star-mag", type=_param, default=22.0,
+                   help="star AB magnitude: float or scipy dist spec "
+                        "(default 22.0 for every star)")
+    p.add_argument("--star-exclusion-arcsec", type=float,
+                   default=DEFAULT_STAR_EXCLUSION_ARCSEC,
+                   help="reject stars within this angular radius of a grid "
+                        f"galaxy (default {DEFAULT_STAR_EXCLUSION_ARCSEC}; 0 "
+                        "disables). Keep well below half the --spacing.")
+    p.add_argument("--star-seed", type=int, default=None,
+                   help="RNG seed for star positions/mags (default: --seed)")
     p.add_argument("--nside", type=int, default=32)
     p.add_argument("--out-dir",
                    default="/sdf/data/rubin/user/brycek/grid_galaxies/catalogs")
@@ -498,16 +607,26 @@ def main():
         p.error("give either --save-tracts (to write a list) or "
                 "--tracts-file (to build a catalog)")
 
+    star_density = (DEFAULT_STAR_DENSITY if args.star_density is None
+                    else args.star_density)
     tracts = read_tract_list(args.tracts_file)
     print(f"Building grid over {len(tracts)} tracts "
           f"at {args.spacing} arcsec spacing (streaming, one tract at a time)...")
-    config_path, n_total = write_footprint_skycatalog(
+    if star_density > 0:
+        print(f"Adding sparse irregular stars at {star_density} stars/arcmin^2 "
+              f"(mag {args.star_mag}), excluding within "
+              f"{args.star_exclusion_arcsec}\" of a galaxy.")
+    config_path, n_total, n_stars_total = write_footprint_skycatalog(
         tracts, args.spacing, args.out_dir, catalog_name=args.name,
         repo=args.repo, nside=args.nside,
         mag=args.mag, hlr=args.hlr, ellipticity=args.ellipticity,
         pa_deg=args.pa_deg, g1=args.g1, g2=args.g2, redshift=args.redshift,
-        seed=args.seed, resume=args.resume, keep_shards=args.keep_shards)
-    print(f"Wrote {n_total} galaxies over {len(tracts)} tracts.")
+        seed=args.seed, star_density=star_density, star_mag=args.star_mag,
+        star_exclusion_arcsec=args.star_exclusion_arcsec,
+        star_seed=args.star_seed, resume=args.resume,
+        keep_shards=args.keep_shards)
+    print(f"Wrote {n_total} galaxies and {n_stars_total} stars "
+          f"over {len(tracts)} tracts.")
     print(f"skyCatalog config: {config_path}")
 
 

@@ -6,9 +6,9 @@ LSST_VERSION: ${WEEKLY}
 pipelineYaml: "/pscratch/sd/b/brycek/gal_grid_sims/pipelines/coadd_pipeline.yaml#lsstcamsim-pipeline"
 
 payload:
-  payloadName: coadd_pipeline_test_dp2_gal_only_grid_mag_22
+  payloadName: coadd_pipeline_test_dp2_grid_mag_22_with_stars
   butlerConfig: dp2_sims_dev
-  inCollection: u/brycek/test_grid_mag_22_gal_only,refcats/dp2_gal_only_grid_mag_22
+  inCollection: u/brycek/test_grid_mag_22_with_stars,refcats/dp2_grid_stars_20251026
   dataQuery: "instrument='LSSTCam' and exposure.observation_type='science'"
 
 numberOfRetries: 3

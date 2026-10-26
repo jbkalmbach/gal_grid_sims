@@ -1,8 +1,17 @@
 # Building a reference catalog from a generated grid skyCatalog
 
-Turn a galaxy skyCatalog produced by `run_grid_skycatalog.py` /
+Turn a skyCatalog produced by `run_grid_skycatalog.py` /
 `dp2_footprint_skycatalog.py` into a reference catalog the butler can ingest
 and use (e.g. for astrometric/photometric calibration of the imSim data).
+
+**Use the stars, not the galaxies, as the refcat.** A pure regular lattice of
+identical galaxies is the pathological worst case for the single-frame
+calibration: PSF modeling finds no point-source candidates and `matchPessimisticB`
+locks onto a degenerate self-similar lattice solution. The generators therefore
+add a sparse, spatially *irregular* population of stars (point sources); build the
+reference catalog from **those stars** (`--object-type star`, the default below).
+The irregular star pattern is exactly what breaks the lattice degeneracy and gives
+astrometry/photometry/PSF their anchors.
 
 Adapted from [jchiang87/refcat_generation](https://github.com/jchiang87/refcat_generation),
 which built refcats from the OpsRehearsal-3 *star* catalogs.  These catalogs
@@ -31,8 +40,11 @@ setup -k -r /sdf/home/b/brycek/u/dev-repos/imSim
 python make_refcat_input.py \
     --skycatalog $SCRATCH/grid_catalogs/dp2_sv320/skyCatalog.yaml \
     --name dp2_sv320 \
+    --object-type star \
     --bands ugrizy --processes 32 --outdir .
 ```
+`--object-type star` (the default) builds the refcat from the injected point
+sources; pass `--object-type galaxy` to build the legacy galaxy refcat instead.
 This iterates every healpix pixel in the catalog (no hardcoded field list),
 computes AB magnitudes from the stored `lsst_flux_<band>` values through the
 skyCatalogs object API, and writes:
@@ -53,34 +65,41 @@ python make_refcat_input.py \
     --bands gri --processes 8 --outdir .
 ```
 The catalog is sharded by healpix, not tract, so this filters on the tract
-encoded in each `galaxy_id` (`galaxy_id = tract * 100_000_000 + index`, matching
-`dp2_footprint_skycatalog.py`) — no butler/skymap lookup needed.  Use a distinct
-`--name` so the test outputs don't overwrite the full-catalog ones.
+encoded in each object id, matching `dp2_footprint_skycatalog.py` — no
+butler/skymap lookup needed. For galaxies that is `galaxy_id = tract *
+100_000_000 + index`; for stars it is `id = STAR_ID_NAMESPACE + tract *
+100_000_000 + index` (the star namespace keeps star and galaxy ids disjoint).
+Use a distinct `--name` so the test outputs don't overwrite the full-catalog ones.
 
 ## 2. Convert to the standard refcat format
 ```bash
+# stars (default refcat): use the star config
 convertReferenceCatalog \
     ./refcat_out \
-    config/grid_galaxies_config.py \
+    config/grid_stars_config.py \
     "grid_galaxies_dp2_sv320_refmags.csv"
 ```
+Use `config/grid_stars_config.py` for the star refcat (dataset name
+`dp2_grid_stars_20251026`) or `config/grid_galaxies_config.py` for the legacy
+galaxy refcat.
 (The 3rd argument is a quoted glob, so you can pass several CSVs at once.)
 This writes HTM-sharded refcat FITS files under
 `refcat_out/<ref_dataset_name>/`, a `master_schema.fits`, and a
-`filename_to_htm.ecsv` manifest.  `<ref_dataset_name>` is set in the config
-(`grid_galaxies_20251023`); bump that suffix when you regenerate so versions
-don't collide.
+`filename_to_htm.ecsv` manifest.  `<ref_dataset_name>` is set in the config;
+bump its date suffix when you regenerate so versions don't collide.
 
 On success `convertReferenceCatalog` prints the exact butler commands for
 step 3 (with the right paths filled in).
 
 ## 3. Ingest into the butler
 Using `REPO` for your butler repo and `DM-NNNNN` for your ticket/run label
-(`convertReferenceCatalog` prints these with the real paths):
+(`convertReferenceCatalog` prints these with the real paths; the dataset-type
+name below must match `ref_dataset_name` in the config you used —
+`dp2_grid_stars_20251026` for stars):
 ```bash
-butler register-dataset-type REPO grid_galaxies_20251023 SimpleCatalog htm7
+butler register-dataset-type REPO dp2_grid_stars_20251026 SimpleCatalog htm7
 
-butler ingest-files -t direct REPO grid_galaxies_20251023 refcats/DM-NNNNN \
+butler ingest-files -t direct REPO dp2_grid_stars_20251026 refcats/DM-NNNNN \
     ./refcat_out/filename_to_htm.ecsv
 
 butler collection-chain REPO --mode extend refcats refcats/DM-NNNNN

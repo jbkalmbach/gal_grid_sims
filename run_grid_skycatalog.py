@@ -226,6 +226,44 @@ def build_grid(ra0, dec0, n, spacing_arcsec, *,
 
 
 # --------------------------------------------------------------------------
+# 1b. Build a sparse, irregular population of stars over the grid footprint
+# --------------------------------------------------------------------------
+def build_stars(ra0, dec0, n, spacing_arcsec, *, n_stars, star_mag=22.0,
+                seed=None, exclusion_arcsec=0.0, galaxy_table=None):
+    """Return a dict of per-star id/ra/dec/mag arrays for `n_stars` stars.
+
+    Stars are placed at irregular (uniform-random) positions over the same sky
+    box the n x n galaxy grid spans (side ~ `n`*`spacing_arcsec`, padded slightly
+    so stars reach the grid edges), NOT on a lattice -- the irregularity is what
+    breaks the ``matchPessimisticB`` degeneracy.  `star_mag` may be a scalar, a
+    scipy.stats frozen distribution, or a length-`n_stars` array (see
+    ``resolve_param``); the default is a single fixed magnitude for every star.
+    Star ids live in the dedicated star namespace so they never collide with
+    galaxy ids.
+
+    If `exclusion_arcsec` > 0 and `galaxy_table` is given, candidate stars within
+    that angular radius of any grid galaxy are rejected, so stars stay isolated
+    point sources.  Keep the radius well below half the galaxy spacing.
+    """
+    from stars import draw_positions_in_box, STAR_ID_NAMESPACE, STAR_SEED_TAG
+
+    rng = np.random.default_rng(None if seed is None
+                                else (seed, STAR_SEED_TAG))
+    # Match the grid's on-sky extent (hex grid spans ~n*step each way); pad by
+    # one step so stars populate right out to the galaxy grid's edge.
+    step = spacing_arcsec / 3600.0
+    side = (n + 1) * step
+    gra = galaxy_table["ra"] if galaxy_table is not None else None
+    gdec = galaxy_table["dec"] if galaxy_table is not None else None
+    ra, dec = draw_positions_in_box(ra0, dec0, side, side, n_stars, rng,
+                                    galaxy_ra=gra, galaxy_dec=gdec,
+                                    exclusion_arcsec=exclusion_arcsec)
+    mag = resolve_param(star_mag, ra.size, rng)
+    ids = STAR_ID_NAMESPACE + np.arange(ra.size, dtype=np.int64)
+    return {"id": ids, "ra": ra, "dec": dec, "mag": mag}
+
+
+# --------------------------------------------------------------------------
 # 2. Magnitude -> LSST photon fluxes
 # --------------------------------------------------------------------------
 def compute_lsst_fluxes(mag, bands=BANDS):
@@ -296,8 +334,12 @@ def _flux_arrow_table(table, fluxes, idx, bands=BANDS):
 
 
 def write_skycatalog(table, fluxes, out_dir, catalog_name="grid_galaxies",
-                     nside=32, bands=BANDS):
+                     nside=32, bands=BANDS, stars=None):
     """Write galaxy_<hp>.parquet, galaxy_flux_<hp>.parquet, and skyCatalog.yaml.
+
+    If `stars` is given it is a dict with ``id``/``ra``/``dec``/``mag`` arrays
+    (see ``build_stars``); the stars are written as pointsource_<hp>.parquet /
+    pointsource_flux_<hp>.parquet and a ``star`` block is added to the config.
 
     Returns the path to the top-level config yaml.
     """
@@ -313,15 +355,35 @@ def write_skycatalog(table, fluxes, out_dir, catalog_name="grid_galaxies",
         pq.write_table(_flux_arrow_table(table, fluxes, idx, bands),
                        os.path.join(cat_dir, f"galaxy_flux_{hpix}.parquet"))
 
-    return write_skycatalog_config(cat_dir, nside=nside)
+    with_stars = stars is not None and len(stars["id"]) > 0
+    if with_stars:
+        from stars import star_arrow_tables
+        f0 = mag0_band_fluxes(bands)
+        spix = hp.ang2pix(nside, stars["ra"], stars["dec"],
+                          lonlat=True, nest=False)
+        for hpix in np.unique(spix):
+            idx = np.where(spix == hpix)[0]
+            # Build main + flux from the SAME idx so the positional join holds.
+            main, flux = star_arrow_tables(stars["id"][idx], stars["ra"][idx],
+                                           stars["dec"][idx], stars["mag"][idx],
+                                           f0, bands)
+            pq.write_table(main,
+                           os.path.join(cat_dir, f"pointsource_{hpix}.parquet"))
+            pq.write_table(flux,
+                           os.path.join(cat_dir, f"pointsource_flux_{hpix}.parquet"))
+
+    return write_skycatalog_config(cat_dir, nside=nside, with_stars=with_stars)
 
 
-def write_skycatalog_config(cat_dir, nside=32):
+def write_skycatalog_config(cat_dir, nside=32, with_stars=False):
     """Write skyCatalog.yaml into `cat_dir` and return its path.
 
     Self-contained single-dir layout: the config yaml lives alongside its
     parquet files. imSim sets skycatalog_root = dirname(config yaml), so use
     catalog_dir="." to keep root/catalog_dir pointing at that same directory.
+
+    If `with_stars` is True, a ``star`` object-type block (pointsource parquet
+    files) is added alongside ``galaxy`` so the catalog carries both populations.
     """
     config = {
         "skycatalog_root": os.path.abspath(cat_dir),
@@ -351,6 +413,9 @@ def write_skycatalog_config(cat_dir, nside=32):
             },
         },
     }
+    if with_stars:
+        from stars import star_config_fragment
+        config["object_types"]["star"] = star_config_fragment(nside=nside)
     config_path = os.path.join(cat_dir, "skyCatalog.yaml")
     with open(config_path, "w") as f:
         yaml.safe_dump(config, f, sort_keys=False)
@@ -361,6 +426,8 @@ def write_skycatalog_config(cat_dir, nside=32):
 # CLI
 # --------------------------------------------------------------------------
 def main():
+    # Lazy import avoids a circular import (stars.py imports from this module).
+    from stars import DEFAULT_STAR_EXCLUSION_ARCSEC
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -386,6 +453,19 @@ def main():
                    help="galaxy redshift (>0): float or scipy dist spec")
     p.add_argument("--seed", type=int, default=None,
                    help="RNG seed for distribution draws")
+    p.add_argument("--n-stars", type=int, default=0,
+                   help="number of sparse irregular stars to add for LSST "
+                        "calibration (0 = galaxies only, the default)")
+    p.add_argument("--star-mag", type=parse_param_spec, default=22.0,
+                   help="star AB magnitude: float or scipy dist spec "
+                        "(default 22.0 for every star)")
+    p.add_argument("--star-exclusion-arcsec", type=float,
+                   default=DEFAULT_STAR_EXCLUSION_ARCSEC,
+                   help="reject stars within this angular radius of a grid "
+                        f"galaxy (default {DEFAULT_STAR_EXCLUSION_ARCSEC}; 0 "
+                        "disables). Keep well below half the --spacing.")
+    p.add_argument("--star-seed", type=int, default=None,
+                   help="RNG seed for star positions/mags (default: --seed)")
     p.add_argument("--nside", type=int, default=32)
     p.add_argument("--out-dir", default="/sdf/data/rubin/user/brycek/grid_galaxies/catalogs")
     p.add_argument("--name", default="grid_galaxies")
@@ -396,12 +476,26 @@ def main():
                        pa_deg=args.pa_deg, g1=args.g1, g2=args.g2,
                        redshift=args.redshift, seed=args.seed)
     fluxes = compute_lsst_fluxes(table["mag"])
+    stars = None
+    if args.n_stars > 0:
+        stars = build_stars(args.ra0, args.dec0, args.n, args.spacing,
+                            n_stars=args.n_stars, star_mag=args.star_mag,
+                            seed=args.star_seed if args.star_seed is not None
+                            else args.seed,
+                            exclusion_arcsec=args.star_exclusion_arcsec,
+                            galaxy_table=table)
     config_path = write_skycatalog(table, fluxes, args.out_dir,
-                                   catalog_name=args.name, nside=args.nside)
+                                   catalog_name=args.name, nside=args.nside,
+                                   stars=stars)
 
     mag = table["mag"]
     fr = fluxes["r"]
     print(f"Wrote {len(mag)} galaxies.")
+    if stars is not None:
+        sm = stars["mag"]
+        print(f"Wrote {len(stars['id'])} irregular stars "
+              f"(mag min={sm.min():.2f} median={np.median(sm):.2f} "
+              f"max={sm.max():.2f}).")
     print(f"skyCatalog config: {config_path}")
     print(f"mag        : min={mag.min():.2f} median={np.median(mag):.2f} "
           f"max={mag.max():.2f}")

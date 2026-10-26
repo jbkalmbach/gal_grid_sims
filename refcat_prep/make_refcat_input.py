@@ -62,8 +62,14 @@ MAG_ERR = 0.001        # per-band magnitude error
 lsst_bps = load_lsst_bandpasses()
 
 # Must match dp2_footprint_skycatalog.py: galaxy_id = tract * ID_STRIDE + index.
-# Used to recover an object's tract for --tracts-file filtering.
+# Used to recover an object's tract for --tracts-file filtering.  Stars share the
+# same per-tract stride but live in a disjoint namespace (stars.STAR_ID_NAMESPACE),
+# so their tract is recovered as (id - STAR_ID_NAMESPACE) // ID_STRIDE.
 ID_STRIDE = 100_000_000
+STAR_ID_NAMESPACE = 9_000_000_000_000_000  # must match stars.STAR_ID_NAMESPACE
+
+# skyCatalogs id-column name per object type (see skyCatalogs.get_object_type_by_hp).
+ID_COLUMN = {"galaxy": "galaxy_id", "star": "id"}
 
 
 def _mag0_fluxes(bands):
@@ -141,27 +147,39 @@ def read_tract_list(path):
     return set(tracts)
 
 
-def read_whole_skycatalog(skycatalog_yaml, tracts=None):
-    """Return a list of every galaxy object in the catalog.
+def _recover_tract(ids, object_type):
+    """Recover the tract id encoded in each object id (see dp2_footprint).
+
+    Galaxies: ``galaxy_id = tract * ID_STRIDE + index``.
+    Stars:    ``id = STAR_ID_NAMESPACE + tract * ID_STRIDE + index``.
+    """
+    ids = np.asarray(ids, dtype=np.int64)
+    if object_type == "star":
+        ids = ids - STAR_ID_NAMESPACE
+    return ids // ID_STRIDE
+
+
+def read_whole_skycatalog(skycatalog_yaml, object_type="galaxy", tracts=None):
+    """Return a list of every object of `object_type` in the catalog.
 
     Rather than cone-searching hardcoded field centers, walk the healpix
-    pixels that actually have galaxy data files and read each in full (no
-    region filter -> no double counting across overlapping regions).
+    pixels that actually have data files for this object type and read each in
+    full (no region filter -> no double counting across overlapping regions).
 
-    If `tracts` is given (a set of tract ids), keep only galaxies belonging to
+    If `tracts` is given (a set of tract ids), keep only objects belonging to
     those tracts.  The catalog is sharded by healpix, not tract, but
-    dp2_footprint_skycatalog.py encodes the tract in every id as
-    ``galaxy_id = tract * ID_STRIDE + index``, so we recover it by integer
-    division -- no butler/skymap lookup needed.
+    dp2_footprint_skycatalog.py encodes the tract in every id, so we recover it
+    by integer division (see ``_recover_tract``) -- no butler/skymap lookup.
     """
     skycatalog_root = os.path.dirname(os.path.abspath(skycatalog_yaml))
     sky_cat = skyCatalogs.open_catalog(skycatalog_yaml,
                                        skycatalog_root=skycatalog_root)
+    id_col = ID_COLUMN[object_type]
 
     tracts = list(tracts) if tracts is not None else None
     objects = []
-    for hp in sorted(sky_cat.hps_by_type("galaxy")):
-        coll = sky_cat.get_object_type_by_hp(hp, "galaxy")
+    for hp in sorted(sky_cat.hps_by_type(object_type)):
+        coll = sky_cat.get_object_type_by_hp(hp, object_type)
         if len(coll) == 0:
             continue
         if tracts is None:
@@ -169,8 +187,8 @@ def read_whole_skycatalog(skycatalog_yaml, tracts=None):
         else:
             # Keep only objects whose tract is in the requested set.  Indexing
             # a collection with an iterable returns a plain list of objects.
-            gid = np.asarray(coll.get_native_attribute("galaxy_id"))
-            keep = np.where(np.isin(gid // ID_STRIDE, tracts))[0]
+            oid = np.asarray(coll.get_native_attribute(id_col))
+            keep = np.where(np.isin(_recover_tract(oid, object_type), tracts))[0]
             if len(keep):
                 objects.extend(coll[(keep,)])
     return objects
@@ -187,6 +205,10 @@ def main():
                     help="path to the generated <catalog>/skyCatalog.yaml")
     ap.add_argument("--name", required=True,
                     help="label for output files, e.g. dp2_sv320")
+    ap.add_argument("--object-type", choices=["galaxy", "star"], default="star",
+                    help="which skyCatalog object type to build the refcat from "
+                         "(default: star -- the point sources used to break the "
+                         "galaxy-lattice astrometry degeneracy)")
     ap.add_argument("--tracts-file",
                     help="optional footprints/*.txt tract list; restrict the "
                          "refcat to galaxies in these tracts (for a smaller "
@@ -211,11 +233,14 @@ def main():
         args.outdir, f"initial_refcat_mags_{args.name}.parquet")
 
     if not os.path.isfile(initial_refcat_data):
-        objects = read_whole_skycatalog(args.skycatalog, tracts=tracts)
+        objects = read_whole_skycatalog(args.skycatalog,
+                                        object_type=args.object_type,
+                                        tracts=tracts)
         nobj = len(objects)
-        print("# skyCatalog galaxies:", nobj)
+        print(f"# skyCatalog {args.object_type} objects:", nobj)
         if nobj == 0:
-            raise RuntimeError(f"no galaxies found in {args.skycatalog}")
+            raise RuntimeError(
+                f"no {args.object_type} objects found in {args.skycatalog}")
 
         processes = max(1, min(args.processes, nobj))
         indexes = np.linspace(0, nobj, processes + 1, dtype=int)

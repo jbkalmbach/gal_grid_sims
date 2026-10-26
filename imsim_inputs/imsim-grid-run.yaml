@@ -16,9 +16,10 @@ modules:
 
 template: imsim-config-skycat
 
-# Our catalogs contain 'galaxy' objects (single-exponential disks).
-input.sky_catalog.obj_types: [galaxy]
-input.sky_catalog.approx_nobjects: 45000
+# Our catalogs contain 'galaxy' objects (single-exponential disks) plus a sparse
+# irregular 'star' (point source) population added for LSST calibration.
+input.sky_catalog.obj_types: [galaxy, star]
+input.sky_catalog.approx_nobjects: 46000
 #input.sky_catalog.full_focal_plane: True
 
 input.atm_psf.screen_size: 819.2
