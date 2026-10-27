@@ -59,6 +59,34 @@ DEFAULT_STAR_DENSITY = 0.15
 # centers, which would rebuild a regular (dual) lattice and re-break astrometry.
 DEFAULT_STAR_EXCLUSION_ARCSEC = 5.0
 
+# Default star AB magnitude range.  The bright end (~18) anchors the astrometric
+# fit and gives PSF selection high-S/N candidates while staying safely below
+# single-visit saturation; the faint end fills out the number density.
+# Magnitudes are drawn uniformly across [min, max] (see mag_spec).
+DEFAULT_STAR_MAG_MIN = 18.0
+DEFAULT_STAR_MAG_MAX = 21.0
+
+
+# --------------------------------------------------------------------------
+# Magnitude spec
+# --------------------------------------------------------------------------
+def mag_spec(mag_min, mag_max):
+    """Return a per-star magnitude spec for the generators' ``resolve_param``.
+
+    If `mag_max` is None (or equal to `mag_min`) a single fixed magnitude is used
+    for every star; otherwise magnitudes are drawn uniformly on [`mag_min`,
+    `mag_max`].  The returned object is either a float scalar or a
+    ``scipy.stats`` frozen uniform distribution, both of which ``resolve_param``
+    already understands -- so no change to the draw machinery is needed.
+    """
+    if mag_max is None or mag_max == mag_min:
+        return float(mag_min)
+    if mag_max < mag_min:
+        raise ValueError(f"mag_max ({mag_max}) < mag_min ({mag_min})")
+    import scipy.stats
+    # scipy uniform is parameterized as [loc, loc+scale].
+    return scipy.stats.uniform(loc=mag_min, scale=mag_max - mag_min)
+
 
 # --------------------------------------------------------------------------
 # Irregular star positions
@@ -279,6 +307,7 @@ def star_config_fragment(nside=32):
 __all__ = [
     "ID_STRIDE", "STAR_ID_NAMESPACE", "SED_FLAT", "STAR_SEED_TAG",
     "DEFAULT_STAR_DENSITY", "DEFAULT_STAR_EXCLUSION_ARCSEC",
+    "DEFAULT_STAR_MAG_MIN", "DEFAULT_STAR_MAG_MAX", "mag_spec",
     "n_stars_for_area", "draw_positions_in_box", "draw_positions_in_region",
     "star_arrow_tables", "star_config_fragment",
 ]

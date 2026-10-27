@@ -8,8 +8,8 @@ tasks:
   calibrateImage:
     class: lsst.pipe.tasks.calibrateImage.CalibrateImageTask
     config:
-      connections.astrometry_ref_cat: "dp2_grid_stars_20251026"
-      connections.photometry_ref_cat: "dp2_grid_stars_20251026"
+      connections.astrometry_ref_cat: "dp2_grid_stars_mag_18_21_20261027"
+      connections.photometry_ref_cat: "dp2_grid_stars_mag_18_21_20261027"
       python: |
         config.photometry.applyColorTerms = False
         config.photometry.match.referenceSelection.magLimit.fluxField = "lsst_i_flux"

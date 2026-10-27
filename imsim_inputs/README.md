@@ -27,19 +27,30 @@ Note the `observationId` you want.
 python ../dp2_footprint_skycatalog.py \
     --tracts-file ../footprints/dp2_tracts_Rubin_SV_320_-15.txt \
     --spacing 20 --mag "norm:loc=20,scale=0.5" --hlr 0.5 --seed 42 \
-    --star-density 0.15 --star-mag 22 --star-exclusion-arcsec 5 --star-seed 7 \
+    --star-density 0.15 --star-mag-min 18 --star-mag-max 21 \
+    --star-exclusion-arcsec 5 --star-seed 7 \
     --out-dir $SCRATCH/grid_catalogs --name dp2_sv320
 ```
 This writes `$SCRATCH/grid_catalogs/dp2_sv320/skyCatalog.yaml` (+ parquet for
 both the `galaxy` and `star` object types). Stars are on by default at
 `--star-density 0.15` stars/arcmin² (a couple dozen per detector); pass
-`--star-density 0` for a galaxy-only catalog. Star positions are uniform-random
-(aperiodic, so `matchPessimisticB` finds a unique pattern) but
-`--star-exclusion-arcsec` (default 5″) rejects any star landing within that
-radius of a grid galaxy, keeping stars isolated. Keep that radius well below
-half `--spacing` or the only room left is the hex-cell centers — a regular dual
-lattice that re-breaks astrometry. The irregular stars are required for
-`calibrateImage` (PSF + astrometry) to run — see `../refcat_prep/README.md`.
+`--star-density 0` for a galaxy-only catalog. Star magnitudes are drawn
+uniformly across `--star-mag-min`..`--star-mag-max` (default 18–21): bright
+stars anchor the astrometric fit and give PSF selection high-S/N candidates,
+while the faint end fills out the number density. Set the two equal for a single
+fixed magnitude, or pass `--star-mag <float|scipy-spec>` to override the range.
+Star positions are uniform-random (aperiodic, so `matchPessimisticB` finds a
+unique pattern) but `--star-exclusion-arcsec` (default 5″) rejects any star
+landing within that radius of a grid galaxy, keeping stars isolated. Keep that
+radius well below half `--spacing` or the only room left is the hex-cell
+centers — a regular dual lattice that re-breaks astrometry. The irregular stars
+are required for `calibrateImage` (PSF + astrometry) to run — see
+`../refcat_prep/README.md`.
+
+Because a star's brightness is baked into the catalog's `lsst_flux_<band>`
+columns, changing the magnitude range means **regenerating the catalog, re-running
+imSim, and rebuilding the refcat** — the matcher needs bright *measured* sources
+in the images, not just in the reference catalog.
 
 ## 3. Run imSim (one CCD; det 94 = R22_S11)
 ```bash

@@ -20,7 +20,7 @@ bands = "ugrizy"
 
 # Name under which the converted refcat is registered in the butler.  Bump the
 # date suffix if you regenerate so old/new versions don't collide.
-config.dataset_config.ref_dataset_name = "dp2_grid_stars_20251026"
+config.dataset_config.ref_dataset_name = "dp2_grid_stars_mag_18_21_20261027"
 
 config.n_processes = 4
 

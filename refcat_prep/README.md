@@ -80,7 +80,7 @@ convertReferenceCatalog \
     "grid_galaxies_dp2_sv320_refmags.csv"
 ```
 Use `config/grid_stars_config.py` for the star refcat (dataset name
-`dp2_grid_stars_20251026`) or `config/grid_galaxies_config.py` for the legacy
+`dp2_grid_stars_mag_18_21_20261027`) or `config/grid_galaxies_config.py` for the legacy
 galaxy refcat.
 (The 3rd argument is a quoted glob, so you can pass several CSVs at once.)
 This writes HTM-sharded refcat FITS files under
@@ -95,11 +95,11 @@ step 3 (with the right paths filled in).
 Using `REPO` for your butler repo and `DM-NNNNN` for your ticket/run label
 (`convertReferenceCatalog` prints these with the real paths; the dataset-type
 name below must match `ref_dataset_name` in the config you used —
-`dp2_grid_stars_20251026` for stars):
+`dp2_grid_stars_mag_18_21_20261027` for stars):
 ```bash
-butler register-dataset-type REPO dp2_grid_stars_20251026 SimpleCatalog htm7
+butler register-dataset-type REPO dp2_grid_stars_mag_18_21_20261027 SimpleCatalog htm7
 
-butler ingest-files -t direct REPO dp2_grid_stars_20251026 refcats/DM-NNNNN \
+butler ingest-files -t direct REPO dp2_grid_stars_mag_18_21_20261027 refcats/DM-NNNNN \
     ./refcat_out/filename_to_htm.ecsv
 
 butler collection-chain REPO --mode extend refcats refcats/DM-NNNNN

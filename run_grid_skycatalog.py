@@ -427,7 +427,8 @@ def write_skycatalog_config(cat_dir, nside=32, with_stars=False):
 # --------------------------------------------------------------------------
 def main():
     # Lazy import avoids a circular import (stars.py imports from this module).
-    from stars import DEFAULT_STAR_EXCLUSION_ARCSEC
+    from stars import (DEFAULT_STAR_EXCLUSION_ARCSEC, DEFAULT_STAR_MAG_MIN,
+                       DEFAULT_STAR_MAG_MAX, mag_spec)
     p = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -456,9 +457,16 @@ def main():
     p.add_argument("--n-stars", type=int, default=0,
                    help="number of sparse irregular stars to add for LSST "
                         "calibration (0 = galaxies only, the default)")
-    p.add_argument("--star-mag", type=parse_param_spec, default=22.0,
-                   help="star AB magnitude: float or scipy dist spec "
-                        "(default 22.0 for every star)")
+    p.add_argument("--star-mag-min", type=float, default=DEFAULT_STAR_MAG_MIN,
+                   help="bright end of the uniform star AB magnitude range "
+                        f"(default {DEFAULT_STAR_MAG_MIN})")
+    p.add_argument("--star-mag-max", type=float, default=DEFAULT_STAR_MAG_MAX,
+                   help="faint end of the uniform star AB magnitude range "
+                        f"(default {DEFAULT_STAR_MAG_MAX}); set equal to "
+                        "--star-mag-min for a single fixed magnitude")
+    p.add_argument("--star-mag", type=parse_param_spec, default=None,
+                   help="override the min/max range with an explicit star AB "
+                        "magnitude: float or scipy dist spec (advanced)")
     p.add_argument("--star-exclusion-arcsec", type=float,
                    default=DEFAULT_STAR_EXCLUSION_ARCSEC,
                    help="reject stars within this angular radius of a grid "
@@ -478,8 +486,12 @@ def main():
     fluxes = compute_lsst_fluxes(table["mag"])
     stars = None
     if args.n_stars > 0:
+        # Explicit --star-mag (if given) wins; otherwise draw uniformly across
+        # the [--star-mag-min, --star-mag-max] range.
+        star_mag = (args.star_mag if args.star_mag is not None
+                    else mag_spec(args.star_mag_min, args.star_mag_max))
         stars = build_stars(args.ra0, args.dec0, args.n, args.spacing,
-                            n_stars=args.n_stars, star_mag=args.star_mag,
+                            n_stars=args.n_stars, star_mag=star_mag,
                             seed=args.star_seed if args.star_seed is not None
                             else args.seed,
                             exclusion_arcsec=args.star_exclusion_arcsec,

@@ -8,7 +8,7 @@ pipelineYaml: "/pscratch/sd/b/brycek/gal_grid_sims/pipelines/coadd_pipeline.yaml
 payload:
   payloadName: coadd_pipeline_test_dp2_grid_mag_22_with_stars
   butlerConfig: dp2_sims_dev
-  inCollection: u/brycek/test_grid_mag_22_with_stars,refcats/dp2_grid_stars_20251026
+  inCollection: u/brycek/test_grid_mag_22_with_stars,refcats/dp2_grid_stars_mag_18_21_20261027
   dataQuery: "instrument='LSSTCam' and exposure.observation_type='science'"
 
 numberOfRetries: 3

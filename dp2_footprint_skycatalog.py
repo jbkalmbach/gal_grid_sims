@@ -55,7 +55,8 @@ from run_grid_skycatalog import (
     N_TOPHAT, BANDS, resolve_param, mag0_band_fluxes,
     _galaxy_arrow_table, write_skycatalog_config,
 )
-from stars import DEFAULT_STAR_DENSITY, DEFAULT_STAR_EXCLUSION_ARCSEC
+from stars import (DEFAULT_STAR_DENSITY, DEFAULT_STAR_EXCLUSION_ARCSEC,
+                   DEFAULT_STAR_MAG_MIN, DEFAULT_STAR_MAG_MAX, mag_spec)
 
 # Defaults for the DP2 repo and the coadd collection we read the footprint from.
 DP2_REPO = "dp2_prep"
@@ -571,9 +572,16 @@ def main():
                    help="point-source surface density [stars/arcmin^2]; adds a "
                         "sparse irregular star population for calibration "
                         f"(default: {DEFAULT_STAR_DENSITY}; 0 = galaxies only)")
-    p.add_argument("--star-mag", type=_param, default=22.0,
-                   help="star AB magnitude: float or scipy dist spec "
-                        "(default 22.0 for every star)")
+    p.add_argument("--star-mag-min", type=float, default=DEFAULT_STAR_MAG_MIN,
+                   help="bright end of the uniform star AB magnitude range "
+                        f"(default {DEFAULT_STAR_MAG_MIN})")
+    p.add_argument("--star-mag-max", type=float, default=DEFAULT_STAR_MAG_MAX,
+                   help="faint end of the uniform star AB magnitude range "
+                        f"(default {DEFAULT_STAR_MAG_MAX}); set equal to "
+                        "--star-mag-min for a single fixed magnitude")
+    p.add_argument("--star-mag", type=_param, default=None,
+                   help="override the min/max range with an explicit star AB "
+                        "magnitude: float or scipy dist spec (advanced)")
     p.add_argument("--star-exclusion-arcsec", type=float,
                    default=DEFAULT_STAR_EXCLUSION_ARCSEC,
                    help="reject stars within this angular radius of a grid "
@@ -609,19 +617,25 @@ def main():
 
     star_density = (DEFAULT_STAR_DENSITY if args.star_density is None
                     else args.star_density)
+    # Explicit --star-mag (if given) wins; otherwise draw uniformly across
+    # the [--star-mag-min, --star-mag-max] range.
+    star_mag = (args.star_mag if args.star_mag is not None
+                else mag_spec(args.star_mag_min, args.star_mag_max))
     tracts = read_tract_list(args.tracts_file)
     print(f"Building grid over {len(tracts)} tracts "
           f"at {args.spacing} arcsec spacing (streaming, one tract at a time)...")
     if star_density > 0:
+        mag_desc = (f"mag {args.star_mag}" if args.star_mag is not None
+                    else f"mag {args.star_mag_min}-{args.star_mag_max}")
         print(f"Adding sparse irregular stars at {star_density} stars/arcmin^2 "
-              f"(mag {args.star_mag}), excluding within "
+              f"({mag_desc}), excluding within "
               f"{args.star_exclusion_arcsec}\" of a galaxy.")
     config_path, n_total, n_stars_total = write_footprint_skycatalog(
         tracts, args.spacing, args.out_dir, catalog_name=args.name,
         repo=args.repo, nside=args.nside,
         mag=args.mag, hlr=args.hlr, ellipticity=args.ellipticity,
         pa_deg=args.pa_deg, g1=args.g1, g2=args.g2, redshift=args.redshift,
-        seed=args.seed, star_density=star_density, star_mag=args.star_mag,
+        seed=args.seed, star_density=star_density, star_mag=star_mag,
         star_exclusion_arcsec=args.star_exclusion_arcsec,
         star_seed=args.star_seed, resume=args.resume,
         keep_shards=args.keep_shards)
