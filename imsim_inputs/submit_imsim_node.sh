@@ -152,19 +152,18 @@ fi
 # Actual node count always follows CHUNK, so trailing empty nodes never spawn.
 NNODES=$(( (TOTAL_TASKS + CHUNK - 1) / CHUNK ))   # ceil
 
-# Per-wave budget ~1h50m; time = WAVES*110min + 40min buffer, capped at 48h
-# (regular QoS max on Perlmutter CPU; https://docs.nersc.gov/jobs/policy/).
+# Per-wave budget ~5min/pair; time = WAVES*5min + 40min buffer. The submitted
+# --time is clamped to the 48h regular-QoS max on Perlmutter CPU
+# (https://docs.nersc.gov/jobs/policy/). If the estimate exceeds that, we still
+# submit at 48h but warn the user the job is not expected to finish.
 # Format as HH:MM:00.
 MAX_MIN=2880                                                # 48h
-TIME_MIN=$(( WAVES * 110 + 40 ))
+TIME_MIN=$(( WAVES * 5 + 40 ))
 if (( TIME_MIN > MAX_MIN )); then
+  echo "WARNING: estimated ${TIME_MIN}min/node exceeds the 48h regular-QoS wall" >&2
+  echo "         limit; submitting at 48h, but the job is NOT expected to finish." >&2
+  echo "         Spread the work over more --nodes so each node fits in 48h." >&2
   TIME_MIN=$MAX_MIN
-  MAX_WAVES=$(( (MAX_MIN - 40) / 110 ))                     # waves that fit in 48h
-  MIN_NODES=$(( (TOTAL_TASKS + PACK * MAX_WAVES - 1) / (PACK * MAX_WAVES) ))
-  echo "WARNING: ${WAVES} waves/node (chunk=${CHUNK}) won't finish in the 48h" >&2
-  echo "         regular-QoS wall limit (~${MAX_WAVES} waves fit). Each node will" >&2
-  echo "         time out mid-chunk. Use at least --nodes ${MIN_NODES} (or fewer" >&2
-  echo "         --waves) so every node finishes." >&2
 fi
 TIME_LIMIT=$(printf '%02d:%02d:00' $((TIME_MIN / 60)) $((TIME_MIN % 60)))
 
