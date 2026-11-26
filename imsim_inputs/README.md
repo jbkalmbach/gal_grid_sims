@@ -87,6 +87,40 @@ ingesting the raws — the butler bakes the `exposure` id in at ingest time, so
 raws already ingested with the wrong `seq_num` must be re-ingested after fixing.
 Assumes single-snap visits (true for DP2).
 
+## Batch submission at scale (shared vs. exclusive nodes)
+Two submit scripts fan a `(visit, detector)` sweep out over Slurm; both take the
+same `--visits-csv`/`--visit-ids`, `--first-n`, `--dets`, `--exclude-dets`, and
+`--dry-run` flags and export the visit/detector lists to their `.sbatch`.
+
+- `submit_imsim.sh` → `imsim_pair_array.sbatch`: **shared** QoS. One array
+  element per pair, each 1 core / 8 GB, `--throttle N` concurrent (default 80).
+  Good for small sweeps and incremental fill-in — you only pay for the cores you
+  use.
+- `submit_imsim_node.sh` → `imsim_pair_node.sbatch`: **exclusive** `regular`-QoS
+  nodes (node-packing). Each array element is one whole Perlmutter CPU node
+  (128 cores / 512 GB) that runs `--pack` pairs at a time (default 60,
+  memory-safe at ~8 GB each) across successive waves. Choose the split either
+  way: `--nodes N` asks for exactly N nodes (chunk derived as
+  `ceil(pairs/N)`), or `--waves W` sets `chunk = pack*W` per node and lets the
+  node count fall out as `ceil(pairs/chunk)` (`--nodes` wins if both given).
+  Too few nodes to finish within the 48 h wall limit prints a warning with the
+  minimum node count that fits.
+  `--node-throttle N` caps concurrent nodes; `--time` is computed from the wave
+  count (`waves*1h50m + buffer`, capped at the 48 h `regular` max — see
+  <https://docs.nersc.gov/jobs/policy/>) and is overridable via a trailing
+  `-- --time=HH:MM:SS`. Faster for large sweeps
+  (guaranteed whole nodes instead of waiting for shared slots), at the cost of
+  whole-node charging. Per-pair logs land in `logs/imsim-<visit>-<det>.log`.
+
+```bash
+# preview node count / chunk / time without submitting
+./submit_imsim_node.sh --visits-csv visits.csv --dets 90-98 --exclude-dets 94 \
+    --pack 60 --waves 4 --dry-run
+
+# submit for real
+./submit_imsim_node.sh --visits-csv visits.csv --dets 90-98 --exclude-dets 94
+```
+
 ## Notes
 - The visit's band must be one for which the catalog has `lsst_flux_<band>`
   (our generators write all ugrizy for both galaxies and stars, so any band
